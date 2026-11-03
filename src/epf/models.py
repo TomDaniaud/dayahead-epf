@@ -131,6 +131,9 @@ class NBEATSForecaster(Forecaster):
     def fit(self, train_days):
         import torch
 
+        # torch and LightGBM ship separate OpenMP runtimes; on macOS both active in one
+        # process deadlock. The network is small, so a single torch thread costs little.
+        torch.set_num_threads(1)
         torch.manual_seed(self.cfg["seed"])
         L = self.cfg["lookback_days"]
         days = pd.DatetimeIndex([d for d in train_days if self.P.index.get_loc(d) >= L])
