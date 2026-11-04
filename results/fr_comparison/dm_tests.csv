@@ -1,0 +1,22 @@
+period,model,base,better,p_value
+all,nbeats vs lgbm,nbeats,lgbm,0.0
+all,lgbm,never,periodic,0.0
+crisis,lgbm,never,periodic,0.0
+all,lgbm,never,drift,0.0
+crisis,lgbm,never,drift,0.0
+all,lgbm,drift,periodic,0.0
+crisis,lgbm,drift,periodic,0.0303
+all,lgbm,periodic+drift,periodic,0.3998
+crisis,lgbm,periodic+drift,periodic,0.527
+all,lgbm,periodic,periodic+drift,0.6002
+crisis,lgbm,periodic,periodic+drift,0.473
+all,nbeats,never,periodic,0.0
+crisis,nbeats,never,periodic,0.0
+all,nbeats,never,drift,0.0
+crisis,nbeats,never,drift,0.0
+all,nbeats,drift,periodic,0.0
+crisis,nbeats,drift,periodic,0.9294
+all,nbeats,periodic+drift,periodic,0.3499
+crisis,nbeats,periodic+drift,periodic,0.1616
+all,nbeats,periodic,periodic+drift,0.6501
+crisis,nbeats,periodic,periodic+drift,0.8384

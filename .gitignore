@@ -6,3 +6,5 @@ data/
 results/*.csv
 results/config.json
 .env
+results/*/forecasts_*.csv
+results/*/retrains_naive.csv

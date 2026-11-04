@@ -1,0 +1,12 @@
+{
+  "test_start": "2021-01-01",
+  "test_end": null,
+  "retrain": "never",
+  "retrain_every": 30,
+  "min_days_between_retrains": 7,
+  "window": "rolling",
+  "window_days": 730,
+  "drift_delta": 0.1,
+  "drift_threshold": 4.0,
+  "drift_ref_days": 14
+}
