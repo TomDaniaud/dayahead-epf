@@ -17,10 +17,23 @@ from epf.data import EXOG, TARGET
 
 
 def daily_matrix(series: pd.Series) -> pd.DataFrame:
-    """Hourly series (24 rows per day) -> (n_days, 24) matrix indexed by day."""
+    """Hourly series (24 rows per day) -> (n_days, 24) matrix with one row per calendar day.
+
+    Days dropped by the data cleaning are filled with the last known day, so a row offset
+    is always a calendar offset ("D-1" really is the day before). This only looks backwards,
+    as a forecaster would without yesterday's prices. Filled days are neither trained on nor
+    scored: :func:`observed_days` lists the real ones.
+    """
     s = series.copy()
     frame = pd.DataFrame({"v": s.values, "day": s.index.normalize(), "hour": s.index.hour})
-    return frame.pivot(index="day", columns="hour", values="v")
+    matrix = frame.pivot(index="day", columns="hour", values="v")
+    calendar = pd.date_range(matrix.index[0], matrix.index[-1], freq="D", name="day")
+    return matrix.reindex(calendar, method="ffill")
+
+
+def observed_days(df: pd.DataFrame) -> pd.DatetimeIndex:
+    """Delivery days actually present in the data, without the ones filled by daily_matrix."""
+    return pd.DatetimeIndex(df.index.normalize().unique())
 
 
 def make_features(df: pd.DataFrame) -> pd.DataFrame:

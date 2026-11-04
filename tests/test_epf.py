@@ -9,7 +9,7 @@ import pytest
 from epf.backtest import BacktestConfig, walk_forward
 from epf.data import download_entsoe, synthetic_market, to_hourly_24
 from epf.drift import PageHinkley, PerformanceDriftMonitor, psi
-from epf.features import make_features
+from epf.features import daily_matrix, make_features
 from epf.metrics import diebold_mariano, forecast_kpis
 from epf.models import AsinhScaler, NaiveWeekly, get_model
 
@@ -129,6 +129,38 @@ def test_psi():
 
 
 # ----------------------------------------------------------------- models/backtest
+def _with_gap(market, first="2021-03-10", last="2021-03-11"):
+    days = market.index.normalize()
+    return market[(days < pd.Timestamp(first)) | (days > pd.Timestamp(last))]
+
+
+def test_lags_follow_the_calendar_across_missing_days(market):
+    df = _with_gap(market)
+    features = make_features(df)
+    day = pd.Timestamp("2021-03-12")  # first day after the gap
+    level = df.loc["2021-03-09", "price"].mean()  # last known prices stand in for D-1
+    assert features.loc[(day, 0), "p_d1_mean"] == pytest.approx(level)
+    d7 = market.loc["2021-03-05 00:00", "price"]
+    assert features.loc[(day, 0), "p_d7"] == pytest.approx(d7 - level)
+
+
+def test_filled_days_only_use_the_past(market):
+    df = _with_gap(market)
+    filled = daily_matrix(df["price"]).loc["2021-03-10"].to_numpy()
+    assert np.array_equal(filled, df.loc["2021-03-09", "price"].to_numpy())
+
+
+@pytest.mark.parametrize("name", ["naive", "lgbm"])
+def test_backtest_skips_missing_days_without_crashing(market, name):
+    df = _with_gap(market)
+    cfg = BacktestConfig(test_start="2021-03-05", test_end="2021-03-20", retrain="never")
+    r = walk_forward(get_model(name), df, cfg)
+    missing = pd.to_datetime(["2021-03-10", "2021-03-11"])
+    assert not r.forecasts.index.isin(missing).any()
+    assert len(r.forecasts) == 14
+    assert not r.forecasts.isna().any().any()
+
+
 def test_naive_is_d7_on_monday(market):
     m = NaiveWeekly()
     m.prepare(market)

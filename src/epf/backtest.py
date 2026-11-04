@@ -19,7 +19,7 @@ import pandas as pd
 
 from epf.data import TARGET
 from epf.drift import PerformanceDriftMonitor, psi
-from epf.features import daily_matrix
+from epf.features import daily_matrix, observed_days
 from epf.metrics import forecast_kpis
 from epf.models import Forecaster, NaiveWeekly
 
@@ -67,7 +67,7 @@ class BacktestResult:
 def walk_forward(model: Forecaster, df: pd.DataFrame, cfg: BacktestConfig,
                  verbose: bool = False) -> BacktestResult:
     P = daily_matrix(df[TARGET])
-    days = P.index
+    days = observed_days(df)
     end = pd.Timestamp(cfg.test_end) if cfg.test_end else days[-1]
     test_days = days[(days >= pd.Timestamp(cfg.test_start)) & (days <= end)]
     if len(test_days) == 0:
