@@ -19,18 +19,18 @@ Forecasts the 24 hourly prices of the next day's power auction. The project focu
 | | |
 |---|---|
 | **Problem** | Forecast the 24 hourly day-ahead prices of day D, at D-1 before the 12:00 auction gate closure |
-| **Data** | ENTSO-E Transparency Platform: day-ahead prices + day-ahead load, wind and solar forecasts (any bidding zone, e.g. FR, DE-LU) |
+| **Data** | ENTSO-E Transparency Platform: day-ahead prices + day-ahead load, wind and solar forecasts (studied on France, any bidding zone works) |
 | **Models** | Naive benchmark · LightGBM · N-BEATS with exogenous inputs (PyTorch) |
 | **Evaluation** | Daily walk-forward backtest · MAE, RMSE, rMAE, bias, tail error · Diebold-Mariano test |
 | **Monitoring** | Page-Hinkley drift detection on daily errors -> retraining; PSI on input features |
-| **Engineering** | Installable package · CLI · 17 unit tests incl. leakage tests · ruff · GitHub Actions CI |
+| **Engineering** | Installable package · CLI · 22 unit tests incl. leakage tests · ruff · GitHub Actions CI |
 
 ## Quick start
 
 ```bash
 git clone https://github.com/TomDaniaud/dayahead-epf.git && cd dayahead-epf
 pip install -e ".[deep,dev]"
-pytest -q          # 17 tests, ~10 s
+pytest -q          # 22 tests, ~30 s
 epf demo           # full benchmark on a synthetic market, no API key needed (~1 min)
 ```
 
@@ -39,11 +39,54 @@ On real data (free ENTSO-E API token):
 ```bash
 pip install -e ".[entsoe]"
 export ENTSOE_API_KEY=...
-epf download --country FR --start 2019-01-01 --end 2026-11-01 --out data/fr.csv
-epf backtest --data data/fr.csv --models naive,lgbm,nbeats --test-start 2025-01-01 --retrain periodic+drift
+epf download --country FR --start 2019-01-01 --end 2026-11-01 --out data/fr.csv   # ~12 min, years fetched in parallel
+epf backtest --data data/fr.csv --models naive,lgbm,nbeats --test-start 2021-01-01 --retrain periodic+drift   # ~9 min
 ```
 
-Each run writes to `results/`: a KPI table, hourly forecasts per model, the retraining log (date, reason, drift statistics) and an error plot.
+Each run writes to `results/`, or to the folder given by `--out`: a KPI table, hourly forecasts per model, the retraining log (date, reason, drift statistics) and an error plot. Hourly forecasts are not tracked in git.
+
+## Results (France, real data)
+
+Walk-forward backtest on ENTSO-E data over **2,123 delivery days, from January 2021 to October 2026**, including the 2022 energy crisis. Training uses a 2-year rolling window, so 2019-2020 only serve as the first training set.
+
+Models retrained every 30 days:
+
+| Model | MAE (€/MWh) | rMAE vs naive | Significantly better than naive? |
+|---|---|---|---|
+| Naive benchmark | 28.99 | 1.00 | - |
+| **LightGBM** | **18.62** | **0.64** | yes, p < 0.001 |
+| N-BEATS | 20.05 | 0.69 | yes, p < 0.001 |
+
+LightGBM is also significantly better than N-BEATS (p < 0.001). Its lead over the benchmark holds every year:
+
+| MAE (€/MWh) | 2021 | 2022 | 2023 | 2024 | 2025-26 |
+|---|---|---|---|---|---|
+| Naive benchmark | 20.09 | 53.09 | 23.49 | 21.75 | 27.68 |
+| LightGBM | 14.33 | 35.53 | 14.86 | 13.91 | 16.38 |
+
+Retraining policy comparison:
+
+| Policy | LightGBM MAE | Retrains | N-BEATS MAE | Retrains |
+|---|---|---|---|---|
+| Never retrain | 26.00 | 1 | 23.95 | 1 |
+| On drift only | 19.61 | 15 | 21.58 | 18 |
+| **Every 30 days** | **18.62** | **71** | **20.05** | **71** |
+| Every 30 days + on drift | 18.64 | 78 | 20.10 | 78 |
+
+The retrain counts include the initial training.
+
+**Takeaways:**
+
+- **Retraining is essential.** Every policy beats never retraining (p < 0.001).
+- **A monthly schedule is hard to beat.** It is significantly better than drift-only retraining for both models, and adding drift alarms to it brings no measurable gain (p > 0.3).
+- **Drift-only is a cheaper option, with a cost in accuracy.** For LightGBM it keeps 87% of the gain from monthly retraining with 15 retrains instead of 71. For N-BEATS it keeps 61%.
+- **The detector has a blind spot.** Its reference error level is measured just after each retrain. A retrain in July 2022 set that level during the crisis, so later errors looked normal: LightGBM saw no alarm until September 2026, and its 2025-26 MAE reached 18.54 against 16.38 with monthly retraining.
+
+![Daily MAE over 2021-2026 with every 30 days + on drift retraining; dotted lines mark drift-triggered retrains](results/fr_periodic_drift/daily_mae.png)
+
+To reproduce: run `epf backtest` once per policy with `--out results/fr_<policy>` as described in [`scripts/compare_policies.py`](scripts/compare_policies.py), then run that script. The summary tables are in [`results/fr_comparison/`](results/fr_comparison/).
+
+> Limits: one market, and the parameters were not tuned. The p-values come from several comparisons on the same data, so treat borderline ones with care.
 
 ## Results (synthetic market)
 
@@ -68,7 +111,7 @@ Retraining policy comparison (LightGBM):
 
 ![Daily MAE over the test period, with drift-triggered retrains](results/daily_mae.png)
 
-> These results validate the pipeline, not the models' real-world accuracy. A study on real ENTSO-E data (France and Germany-Luxembourg, 2019-2026, with 2022 as a natural drift test) is the next step.
+> These results validate the pipeline, not the models' real-world accuracy. The market has a single clean break here, the setting that suits a drift detector best. On real data, drift alarms do not beat a monthly schedule.
 
 ## Key design decisions
 
@@ -82,7 +125,7 @@ Retraining policy comparison (LightGBM):
 
 **Retraining driven by performance.** Each day the realised prices become known after the auction, so the day's error is observed before forecasting the next day. Daily errors, normalised by the error level just after the last retrain, feed a Page-Hinkley test; an alarm triggers retraining (with a minimum gap of 7 days). Feature drift (PSI on residual load) is logged as a diagnostic but does not trigger retraining on its own, because it also fires on normal seasonal changes such as summer solar.
 
-**Market details handled.** Since October 2025 the European day-ahead auction clears in 15-minute periods; data is averaged to hourly. Daylight-saving days are normalised to 24 hours (missing hour interpolated, duplicated hour averaged).
+**Market details handled.** Since October 2025 the European day-ahead auction clears in 15-minute periods; data is averaged to hourly. Daylight-saving days are normalised to 24 hours (missing hour interpolated, duplicated hour averaged). Days with gaps too long to interpolate (16 of 2,861 for France) are dropped: they are neither trained on nor scored, and they are filled from the last known day when used as an input, so "D-1" always means the previous calendar day.
 
 ## Repository layout
 
@@ -95,6 +138,8 @@ src/epf/
   drift.py      Page-Hinkley test, performance monitor, PSI
   metrics.py    forecast KPIs, Diebold-Mariano test
   cli.py        `epf` command line
+scripts/        retraining policy comparison
+results/        synthetic demo plot, France results per policy
 tests/          pytest suite
 ```
 
@@ -102,7 +147,7 @@ Adding a model means implementing three methods (`prepare`, `fit`, `predict`) an
 
 ## Roadmap
 
-- Results on real ENTSO-E data (FR, DE-LU)
+- Refresh the drift detector's reference error level so a crisis-era retrain cannot silence it
 - Probabilistic forecasts: quantile LightGBM, conformal intervals, pinball loss
 - Gas price (TTF) and cross-border flow features; LightGBM + N-BEATS ensemble
 - Hyper-parameter search at each retrain (Optuna)
