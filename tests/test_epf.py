@@ -1,6 +1,7 @@
 import sys
 import threading
 import types
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -22,8 +23,8 @@ def market():
 # ------------------------------------------------------------------ data & features
 class FakeEntsoeClient:
     """Fails once per period with a timeout, then serves hourly data."""
-    failed: set = set()
-    lock = threading.Lock()
+    failed: ClassVar[set] = set()
+    lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self, api_key, timeout=None):
         pass
