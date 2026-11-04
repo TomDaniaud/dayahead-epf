@@ -1,9 +1,13 @@
+import sys
+import threading
+import types
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from epf.backtest import BacktestConfig, walk_forward
-from epf.data import synthetic_market, to_hourly_24
+from epf.data import download_entsoe, synthetic_market, to_hourly_24
 from epf.drift import PageHinkley, PerformanceDriftMonitor, psi
 from epf.features import make_features
 from epf.metrics import diebold_mariano, forecast_kpis
@@ -16,6 +20,46 @@ def market():
 
 
 # ------------------------------------------------------------------ data & features
+class FakeEntsoeClient:
+    """Fails once per period with a timeout, then serves hourly data."""
+    failed: set = set()
+    lock = threading.Lock()
+
+    def __init__(self, api_key, timeout=None):
+        pass
+
+    @staticmethod
+    def _index(start, end):
+        return pd.date_range(start, end, freq="1h", tz="Europe/Brussels", inclusive="left")
+
+    def query_day_ahead_prices(self, country, start, end):
+        with self.lock:
+            if start not in self.failed:
+                self.failed.add(start)
+                raise TimeoutError("read timed out")
+        idx = self._index(start, end)
+        return pd.Series(float(start.year), index=idx)
+
+    def query_load_forecast(self, country, start, end):
+        return pd.DataFrame({"Forecasted Load": 1.0}, index=self._index(start, end))
+
+    def query_wind_and_solar_forecast(self, country, start, end):
+        return pd.DataFrame({"Solar": 1.0, "Wind Onshore": 1.0, "Wind Offshore": 1.0},
+                            index=self._index(start, end))
+
+
+def test_download_keeps_years_in_order_and_retries(monkeypatch):
+    monkeypatch.setitem(sys.modules, "entsoe", types.SimpleNamespace(EntsoePandasClient=FakeEntsoeClient))
+    monkeypatch.setattr("epf.data.time.sleep", lambda s: None)
+    df = download_entsoe("FR", "2022-01-01", "2024-07-01", api_key="x")
+    assert df.index.is_monotonic_increasing and not df.index.has_duplicates
+    assert sorted(df["price"].unique()) == [2022.0, 2023.0, 2024.0]
+    assert df.index.min() == pd.Timestamp("2022-01-01")
+    assert (df.groupby(df.index.normalize()).size() == 24).all()
+    assert (df["wind_fc"] == 2.0).all()
+    assert len(FakeEntsoeClient.failed) == 3  # each year failed once, then recovered
+
+
 def test_dst_handling_gives_24_hours_per_day():
     idx = pd.date_range("2024-03-30", "2024-11-01", freq="15min", tz="UTC")
     df = pd.DataFrame({"price": np.arange(len(idx), dtype=float)}, index=idx)

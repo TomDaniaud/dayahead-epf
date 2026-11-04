@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import itertools
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -57,28 +59,48 @@ def load_csv(path: str) -> pd.DataFrame:
     return df[[TARGET, *EXOG]]
 
 
-def download_entsoe(country: str, start: str, end: str, api_key: str | None = None) -> pd.DataFrame:
+def _fetch_period(api_key: str, country: str, a: pd.Timestamp, b: pd.Timestamp,
+                  attempts: int = 3, retry_wait: float = 30.0) -> pd.DataFrame:
+    """Download one chunk, retrying on network errors. Each call has its own client/session."""
+    from entsoe import EntsoePandasClient
+
+    client = EntsoePandasClient(api_key=api_key, timeout=120)
+    for attempt in range(1, attempts + 1):
+        try:
+            price = client.query_day_ahead_prices(country, start=a, end=b).rename(TARGET)
+            load = client.query_load_forecast(country, start=a, end=b).iloc[:, 0].rename("load_fc")
+            ws = client.query_wind_and_solar_forecast(country, start=a, end=b)
+            break
+        except OSError as e:  # requests' exceptions, timeouts included, derive from OSError
+            if attempt == attempts:
+                raise
+            print(f"{a.date()}: {type(e).__name__}, retry {attempt}/{attempts - 1}", flush=True)
+            time.sleep(retry_wait * attempt)
+    wind = ws.filter(like="Wind").sum(axis=1).rename("wind_fc")
+    solar = ws.get("Solar", pd.Series(0.0, index=ws.index)).rename("solar_fc")
+    part = pd.concat([to_hourly_24(s.to_frame()) for s in (price, load, wind, solar)], axis=1)
+    print(f"{a.date()} to {b.date()}: done", flush=True)
+    return part
+
+
+def download_entsoe(country: str, start: str, end: str, api_key: str | None = None,
+                    workers: int = 8) -> pd.DataFrame:
     """Download prices + day-ahead load/wind/solar forecasts from the ENTSO-E Transparency Platform.
 
     Requires ``pip install dayahead-epf[entsoe]`` and a free API token
     (env var ``ENTSOE_API_KEY``; request it by email after registering on transparency.entsoe.eu).
-    Queries are chunked by year to stay under the API limits.
+    Queries are chunked by year and the years fetched concurrently: entsoe-py splits load and
+    wind/solar into monthly requests and each one takes ~20 s server-side, so a sequential run
+    is slow. Eight workers stay far below the platform's limit of 400 requests per minute.
     """
-    from entsoe import EntsoePandasClient
-
-    client = EntsoePandasClient(api_key=api_key or os.environ["ENTSOE_API_KEY"])
+    api_key = api_key or os.environ["ENTSOE_API_KEY"]
     bounds = pd.date_range(pd.Timestamp(start, tz=MARKET_TZ),
                            pd.Timestamp(end, tz=MARKET_TZ), freq="YS").tolist()
     bounds = [pd.Timestamp(start, tz=MARKET_TZ), *bounds[1:], pd.Timestamp(end, tz=MARKET_TZ)]
-    parts = []
-    for a, b in itertools.pairwise(bounds):
-        price = client.query_day_ahead_prices(country, start=a, end=b).rename(TARGET)
-        load = client.query_load_forecast(country, start=a, end=b).iloc[:, 0].rename("load_fc")
-        ws = client.query_wind_and_solar_forecast(country, start=a, end=b)
-        wind = ws.filter(like="Wind").sum(axis=1).rename("wind_fc")
-        solar = ws.get("Solar", pd.Series(0.0, index=ws.index)).rename("solar_fc")
-        parts.append(pd.concat([to_hourly_24(s.to_frame()) for s in (price, load, wind, solar)],
-                               axis=1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_fetch_period, api_key, country, a, b)
+                   for a, b in itertools.pairwise(bounds)]
+        parts = [f.result() for f in futures]  # submission order, so years stay sorted
     df = pd.concat(parts)
     return df[~df.index.duplicated()].dropna()
 
